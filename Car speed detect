@@ -1,0 +1,88 @@
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+video_path = r"C:\Users\opste\Downloads\video_2025.mp4"
+cap = cv2.VideoCapture(video_path)
+
+model = YOLO("yolov10n.pt")
+
+fps = cap.get(cv2.CAP_PROP_FPS)
+scale = 0.05
+frame_num = 0
+min_movement_px = 2
+
+
+object_tracker = {}
+counted_ids = set()
+vehicle_count = 0
+line_y = 300
+
+class_names = {
+    2: 'Car',
+    3: 'Motorcycle',
+    5: 'Bus',
+    7: 'Truck'
+}
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_num += 1
+    results = model.track(frame, persist=True, classes=[2, 3, 5, 7])  # Машины
+
+    boxes = results[0].boxes
+    if boxes.id is not None:
+        ids = boxes.id.cpu().numpy()
+        coords = boxes.xyxy.cpu().numpy()
+        cls = boxes.cls.cpu().numpy()
+
+        for i, obj_id in enumerate(ids):
+            x1, y1, x2, y2 = coords[i]
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            label_id = int(cls[i])
+            label = class_names.get(label_id, "Vehicle")
+
+            if obj_id in object_tracker:
+                prev_x, prev_y, prev_frame = object_tracker[obj_id]
+                dx = center_x - prev_x
+                dy = center_y - prev_y
+                dist_px = np.sqrt(dx**2 + dy**2)
+
+                if dist_px < min_movement_px:
+                    speed = 0
+                else:
+                    dt = (frame_num - prev_frame) / fps
+                    dist_m = dist_px * scale
+                    speed = (dist_m / dt) * 3.6
+
+                color = (0, 255, 0) if speed <= 70 else (0, 0, 255)
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+
+                if speed == 0:
+                    text = f"{label} | Stationary"
+                else:
+                    text = f"{label} | {int(speed)} km/h"
+
+                cv2.putText(frame, text, (int(x1), int(y1) - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+                if prev_y < line_y <= center_y and obj_id not in counted_ids:
+                    vehicle_count += 1
+                    counted_ids.add(obj_id)
+
+            object_tracker[obj_id] = (center_x, center_y, frame_num)
+
+    cv2.line(frame, (0, line_y), (frame.shape[1], line_y), (255, 255, 0), 2)
+    cv2.putText(frame, f"Vehicle count: {vehicle_count}", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
+
+    cv2.imshow("Speed detection", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
